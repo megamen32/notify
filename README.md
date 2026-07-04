@@ -1,106 +1,118 @@
-# notify
+# Notify MCP
 
-`notify` is a small Bash utility for watching a Linux process and sending Telegram messages when it starts watching, streams optional log lines, and when the process exits.
+<p align="center">
+  <img src="assets/hero.svg" alt="Notify MCP saves agent tokens during long waits" width="100%">
+</p>
 
-It is useful for long-running scripts, AI agents, cron jobs, SSH sessions, and server maintenance tasks.
+**Stop paying your AI agent to stare at a terminal.**
 
-## Features
+Notify MCP lets Codex and other coding agents start long, non-interactive jobs, wait for a short bounded window, then return control with a `job_id`, `pid`, and `log_file`. The process keeps running in the background, `/usr/local/bin/notify` watches it, and Telegram tells you when it finishes or hits a hard timeout.
 
-- Watch by PID or by command substring.
-- Sends Telegram notifications through `sendMessage`.
-- Optional live log forwarding or final log tail.
-- Safe non-interactive mode for AI agents and automation.
-- Per-PID watcher lock with `--replace` support.
-- Process identity check through `/proc/<pid>/stat` start id to reduce PID reuse mistakes.
+For hour-long builds, migrations, test suites, backups, and deployments, this can cut waiting/polling token usage by **90%+** compared with an agent that keeps checking logs until the command exits.
 
-## Install
+## Why agents use it
+
+- **Codex long-wait mode:** launch the job, wait up to 180 seconds, then stop burning tokens.
+- **No polling loop:** the MCP tool schema tells the model to return when `alive=true`.
+- **Telegram completion:** success, failure, logs, and hard-timeout alerts arrive outside the chat.
+- **Self-describing MCP:** usage rules are embedded in `tools/list`; no skill is required for MCP-aware clients.
+- **PTY-safe split:** use Notify MCP for non-interactive jobs; use `pty-mcp` for prompts, TUIs, editors, or keystrokes.
+
+## 60-second install
 
 ```bash
-sudo install -m 0755 -o root -g root bin/notify /usr/local/bin/notify
-```
-
-Create secrets for the user that will run `notify`:
-
-```bash
+git clone https://github.com/megamen32/notify ~/.local/share/notify
+sudo install -m 0755 ~/.local/share/notify/bin/notify /usr/local/bin/notify
 mkdir -p ~/.config/secrets
 cat > ~/.config/secrets/notifier.env <<'ENV'
 TELEGRAM_BOT_TOKEN=123456:telegram-bot-token
 TELEGRAM_CHAT_ID=123456789
-# optional:
-# TELEGRAM_PROXY_URL=socks5h://127.0.0.1:1080
-# TELEGRAM_TIMEOUT_MS=3500
 ENV
 chmod 600 ~/.config/secrets/notifier.env
 ```
 
-## Usage
-
-Interactive:
+Test the CLI:
 
 ```bash
-notify
-notify sync_sessions
-notify 12345
+sleep 10 & notify --non-interactive --pid $! --no-log --replace --hard-timeout 30m
 ```
 
-Automation / AI-safe:
+## Add to Codex
 
 ```bash
-notify --non-interactive --pid 12345 --no-log --replace
-notify -n --query sync_sessions --first --no-log --replace
-notify -n --pid 12345 --log-tail /tmp/job.log --replace
-notify -n --pid 12345 --log-live /tmp/job.log --replace
+codex mcp add notify -- /usr/bin/python3 ~/.local/share/notify/mcp/notify_mcp.py
+codex mcp list
 ```
 
-`--non-interactive` / `-n` disables prompts, `fzf`, and `read`. If a query matches multiple processes, `notify` fails with a list unless `--first` is passed.
+Or edit `~/.codex/config.toml` / `.codex/config.toml`:
 
-`--hard-timeout 30m` limits how long the background watcher follows a still-running process. It sends a timeout notification and stops watching; use `0` to disable the limit. Supported forms: seconds (`1800`), `30m`, `1h`, `500ms`.
+```toml
+[mcp_servers.notify]
+command = "/usr/bin/python3"
+args = ["/home/YOU/.local/share/notify/mcp/notify_mcp.py"]
+```
 
-## AI skill
+## Add to OpenCode
 
-The skill lives in [`skill/SKILL.md`](skill/SKILL.md). Copy it into the skill directory of the AI runtime you use, or keep the repo checked out and point the runtime to this folder.
+Add this to `~/.config/opencode/opencode.jsonc` or your project `opencode.jsonc`:
 
-## MCP server for AI agents
-
-This repo also includes a small stdio MCP server: `mcp/notify_mcp.py`.
-
-The most useful tool is `run_and_notify`: it starts a shell command detached in the background, stores logs under `~/.local/state/notify-mcp/jobs/<job_id>/`, attaches `/usr/local/bin/notify`, and returns immediately.
-
-Example MCP tool arguments:
-
-```json
+```jsonc
 {
-  "command": "python3 long_job.py",
-  "cwd": "/home/roomhacker/project",
-  "log_mode": "tail",
-  "replace": true,
-  "wait_seconds": 180,
-  "hard_timeout": "30m"
+  "mcp": {
+    "notify": {
+      "type": "local",
+      "command": [
+        "/usr/bin/python3",
+        "/home/YOU/.local/share/notify/mcp/notify_mcp.py"
+      ],
+      "enabled": true
+    }
+  }
 }
 ```
 
-For AI agents, the rule is: if a command is expected to take more than 3 minutes, call `run_and_notify`, wait at most `wait_seconds` (normally <=180), and if the process is still alive return the `job_id`, `pid`, and `log_file` instead of polling. Telegram gets completion or hard-timeout notifications.
+## Add to VS Code
 
-### Built-in MCP instructions
+Create `.vscode/mcp.json` in the workspace, or use **MCP: Open User Configuration**:
 
-The Notify MCP server is self-describing. Its `tools/list` output includes the long-job rules directly in tool descriptions and JSON schema property descriptions, similar to `pty-mcp`. MCP clients should see when to use `run_and_notify`, when to stop waiting, and when to choose `pty-mcp` without relying on an external skill or AGENTS.md file.
-
-Returned fields include `job_id`, `pid`, `log_file`, `status_file`, `alive`, and `status`. Use `job_status` or `job_tail` only for small bounded checks. Telegram gets the completion message, so the AI does not need to keep polling or dump long logs into the chat.
-
-Available MCP tools:
-
-- `run_and_notify` — start a new detached command and notify on completion.
-- `attach_pid` — attach notification to an existing PID.
-- `attach_query` — attach by process substring, non-interactive and deterministic.
-- `job_status` — small metadata/status check.
-- `job_tail` — bounded log tail.
-- `list_jobs` — recent jobs without log dumps.
-- `kill_job` — signal a job process group.
-
-Local GPTAdmin install example:
-
-```bash
-sudo gptadmin mcp add notify --install --status \
-  --cwd /home/roomhacker/notify \
-  -- /usr/bin/python3 /home/roomhacker/notify/mcp/notify_mcp.py
+```json
+{
+  "servers": {
+    "notify": {
+      "type": "stdio",
+      "command": "/usr/bin/python3",
+      "args": ["/home/YOU/.local/share/notify/mcp/notify_mcp.py"]
+    }
+  }
+}
 ```
+
+Then run **MCP: List Servers** and start `notify`.
+
+## What the agent sees
+
+The MCP server itself teaches the model the rule:
+
+```text
+For non-interactive jobs expected to take more than 3 minutes,
+use run_and_notify with log_mode="tail", wait_seconds <= 180,
+hard_timeout="30m", replace=true.
+
+If alive=true/state="running", stop waiting and report job_id,
+pid, and log_file. Do not keep polling unless explicitly asked.
+Use pty-mcp for interactive/TUI/prompt commands.
+```
+
+## Docs
+
+- [MCP server](docs/mcp.md) — tools, schemas, agent behavior, client configs.
+- [CLI tool](docs/cli.md) — `/usr/local/bin/notify` usage, Telegram secrets, logs.
+- [AI skill](docs/skill.md) — optional fallback for clients that do not expose MCP tool descriptions well.
+
+## Do I still need the skill?
+
+Usually **no**. For Codex, OpenCode, VS Code, Claude, and other MCP-aware clients, the important instructions are now embedded directly in the MCP tool descriptions. Keep the skill only as a fallback for runtimes that do not surface MCP schema descriptions reliably.
+
+## License
+
+MIT
