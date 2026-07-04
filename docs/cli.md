@@ -6,6 +6,14 @@ The MCP server uses this CLI under the hood.
 
 ## Install
 
+From npx/npm package:
+
+```bash
+npm exec -y --package github:megamen32/notify -- notify-install
+```
+
+From a cloned or extracted release archive:
+
 ```bash
 sudo install -m 0755 -o root -g root bin/notify /usr/local/bin/notify
 ```

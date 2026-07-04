@@ -79,12 +79,22 @@ Send `TERM`, `INT`, or `KILL` to the job process group.
 
 ### Codex
 
+Recommended npx install:
+
 ```bash
-codex mcp add notify -- /usr/bin/python3 ~/.local/share/notify/mcp/notify_mcp.py
+codex mcp add notify -- npx -y github:megamen32/notify
 codex mcp list
 ```
 
 Manual TOML:
+
+```toml
+[mcp_servers.notify]
+command = "npx"
+args = ["-y", "github:megamen32/notify"]
+```
+
+Local Python install is also supported:
 
 ```toml
 [mcp_servers.notify]
@@ -99,7 +109,7 @@ args = ["/home/YOU/.local/share/notify/mcp/notify_mcp.py"]
   "mcp": {
     "notify": {
       "type": "local",
-      "command": ["/usr/bin/python3", "/home/YOU/.local/share/notify/mcp/notify_mcp.py"],
+      "command": ["npx", "-y", "github:megamen32/notify"],
       "enabled": true
     }
   }
@@ -115,12 +125,23 @@ args = ["/home/YOU/.local/share/notify/mcp/notify_mcp.py"]
   "servers": {
     "notify": {
       "type": "stdio",
-      "command": "/usr/bin/python3",
-      "args": ["/home/YOU/.local/share/notify/mcp/notify_mcp.py"]
+      "command": "npx",
+      "args": ["-y", "github:megamen32/notify"]
     }
   }
 }
 ```
+
+## Release assets
+
+GitHub Releases include portable archives and npm package tarballs:
+
+- `notify-mcp-vX.Y.Z.tar.gz`
+- `notify-mcp-vX.Y.Z.zip`
+- `notify-mcp-X.Y.Z.tgz`
+- `SHA256SUMS`
+
+The archive contains `install.sh`, `bin/notify`, `mcp/notify_mcp.py`, docs, and the npm wrapper.
 
 ## Environment
 

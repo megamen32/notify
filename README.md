@@ -18,11 +18,19 @@ For hour-long builds, migrations, test suites, backups, and deployments, this ca
 - **Self-describing MCP:** usage rules are embedded in `tools/list`; no skill is required for MCP-aware clients.
 - **PTY-safe split:** use Notify MCP for non-interactive jobs; use `pty-mcp` for prompts, TUIs, editors, or keystrokes.
 
-## 60-second install
+## 30-second MCP install
+
+For MCP clients, the simplest install is `npx`:
 
 ```bash
-git clone https://github.com/megamen32/notify ~/.local/share/notify
-sudo install -m 0755 ~/.local/share/notify/bin/notify /usr/local/bin/notify
+npx -y github:megamen32/notify
+```
+
+That command starts the stdio MCP server. It bundles the Bash watcher and automatically sets `NOTIFY_BIN`, so the MCP server can run without a separate clone.
+
+For Telegram notifications, create secrets for the user that runs the MCP client:
+
+```bash
 mkdir -p ~/.config/secrets
 cat > ~/.config/secrets/notifier.env <<'ENV'
 TELEGRAM_BOT_TOKEN=123456:telegram-bot-token
@@ -31,16 +39,17 @@ ENV
 chmod 600 ~/.config/secrets/notifier.env
 ```
 
-Test the CLI:
+Want the raw CLI too?
 
 ```bash
-sleep 10 & notify --non-interactive --pid $! --no-log --replace --hard-timeout 30m
+npm exec -y --package github:megamen32/notify -- notify-install
+# or download notify-mcp-v*.tar.gz from Releases
 ```
 
 ## Add to Codex
 
 ```bash
-codex mcp add notify -- /usr/bin/python3 ~/.local/share/notify/mcp/notify_mcp.py
+codex mcp add notify -- npx -y github:megamen32/notify
 codex mcp list
 ```
 
@@ -48,8 +57,8 @@ Or edit `~/.codex/config.toml` / `.codex/config.toml`:
 
 ```toml
 [mcp_servers.notify]
-command = "/usr/bin/python3"
-args = ["/home/YOU/.local/share/notify/mcp/notify_mcp.py"]
+command = "npx"
+args = ["-y", "github:megamen32/notify"]
 ```
 
 ## Add to OpenCode
@@ -61,10 +70,7 @@ Add this to `~/.config/opencode/opencode.jsonc` or your project `opencode.jsonc`
   "mcp": {
     "notify": {
       "type": "local",
-      "command": [
-        "/usr/bin/python3",
-        "/home/YOU/.local/share/notify/mcp/notify_mcp.py"
-      ],
+      "command": ["npx", "-y", "github:megamen32/notify"],
       "enabled": true
     }
   }
@@ -80,8 +86,8 @@ Create `.vscode/mcp.json` in the workspace, or use **MCP: Open User Configuratio
   "servers": {
     "notify": {
       "type": "stdio",
-      "command": "/usr/bin/python3",
-      "args": ["/home/YOU/.local/share/notify/mcp/notify_mcp.py"]
+      "command": "npx",
+      "args": ["-y", "github:megamen32/notify"]
     }
   }
 }
@@ -102,6 +108,15 @@ If alive=true/state="running", stop waiting and report job_id,
 pid, and log_file. Do not keep polling unless explicitly asked.
 Use pty-mcp for interactive/TUI/prompt commands.
 ```
+
+## Downloadable release assets
+
+Each GitHub release includes:
+
+- `notify-mcp-vX.Y.Z.tar.gz` — portable bundle with `install.sh`
+- `notify-mcp-vX.Y.Z.zip` — same bundle for zip-based workflows
+- `notify-mcp-X.Y.Z.tgz` — npm package tarball
+- `SHA256SUMS` — checksums
 
 ## Docs
 

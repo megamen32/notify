@@ -1,0 +1,43 @@
+{
+  "name": "notify-mcp",
+  "version": "0.1.1",
+  "description": "MCP server that lets AI agents run long jobs without burning tokens while waiting",
+  "type": "module",
+  "license": "MIT",
+  "homepage": "https://github.com/megamen32/notify#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/megamen32/notify.git"
+  },
+  "bugs": {
+    "url": "https://github.com/megamen32/notify/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "codex",
+    "opencode",
+    "vscode",
+    "telegram",
+    "agent",
+    "long-running"
+  ],
+  "bin": {
+    "notify-mcp": "npm/notify-mcp.js",
+    "notify-install": "npm/install-notify.js"
+  },
+  "files": [
+    "README.md",
+    "LICENSE",
+    "bin/notify",
+    "mcp/notify_mcp.py",
+    "npm/notify-mcp.js",
+    "npm/install-notify.js",
+    "docs/",
+    "assets/hero.svg",
+    "skill/SKILL.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}
