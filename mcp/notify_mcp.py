@@ -347,24 +347,185 @@ def tool_kill_job(args: Dict[str, Any]) -> Dict[str, Any]:
 
 TOOLS = {
     "run_and_notify": {
-        "description": "For commands likely to exceed 3 minutes: start detached in the background, attach /usr/local/bin/notify, optionally wait up to wait_seconds, then return job_id/pid/log_file instead of burning tokens. Default hard_timeout is 30m.",
-        "inputSchema": {"type": "object", "properties": {"command": {"type": "string"}, "cwd": {"type": ["string", "null"], "default": "/home/roomhacker"}, "log_mode": {"type": "string", "enum": ["none", "tail", "live"], "default": "tail"}, "replace": {"type": "boolean", "default": True}, "note": {"type": ["string", "null"]}, "wait_seconds": {"type": ["integer", "null"], "default": 0, "description": "Optional small wait before returning. Use <=180 for tasks expected around 3 minutes; use 0 to return immediately."}, "hard_timeout": {"type": ["string", "integer", "null"], "default": "30m", "description": "Maximum notify watcher lifetime, e.g. 1800, 30m, 1h. Default 30m."}}, "required": ["command"], "additionalProperties": False},
+        "description": (
+            "Run a non-interactive shell command in a detached background process, attach /usr/local/bin/notify, and return job_id/pid/log_file. "
+            "Built-in AI usage rule: use this instead of a blocking shell command for non-interactive jobs expected to take more than 3 minutes. "
+            "Set log_mode='tail', hard_timeout='30m', replace=true, and wait_seconds no more than 180. "
+            "If the result has alive=true/state='running', stop waiting and report job_id, pid, and log_file to the user; do not keep polling or dumping logs unless explicitly asked. "
+            "Use pty-mcp instead when the command may be interactive, use a TUI, ask prompts, need keystrokes, or require a real terminal."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "Shell command to run via bash -lc in the background. Must be non-interactive; use pty-mcp for prompts/TUI/keystrokes.",
+                },
+                "cwd": {
+                    "type": ["string", "null"],
+                    "default": "/home/roomhacker",
+                    "description": "Working directory for the command. Defaults to the MCP process cwd/home.",
+                },
+                "log_mode": {
+                    "type": "string",
+                    "enum": ["none", "tail", "live"],
+                    "default": "tail",
+                    "description": "How notify should include logs in Telegram. For AI long jobs prefer 'tail' to keep output bounded.",
+                },
+                "replace": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Use Telegram replace/edit mode when possible to avoid notification spam. Prefer true.",
+                },
+                "note": {
+                    "type": ["string", "null"],
+                    "description": "Optional human note stored in job metadata; useful to explain why the job was launched.",
+                },
+                "wait_seconds": {
+                    "type": ["integer", "null"],
+                    "default": 0,
+                    "description": "Bounded synchronous wait before returning. For jobs expected >3 minutes use <=180; use 0 to return immediately. Never set this above hard_timeout.",
+                },
+                "hard_timeout": {
+                    "type": ["string", "integer", "null"],
+                    "default": "30m",
+                    "description": "Maximum notify watcher lifetime, e.g. 1800, 30m, 1h. Default 30m. If reached while the process is still alive, notify sends timeout and stops watching.",
+                },
+            },
+            "required": ["command"],
+            "additionalProperties": False,
+        },
         "handler": tool_run_and_notify,
     },
     "attach_pid": {
-        "description": "Attach Telegram completion notification to an already running PID and return immediately.",
-        "inputSchema": {"type": "object", "properties": {"pid": {"type": "integer"}, "log_mode": {"type": "string", "enum": ["none", "tail", "live"], "default": "none"}, "log_file": {"type": ["string", "null"]}, "replace": {"type": "boolean", "default": True}, "hard_timeout": {"type": ["string", "integer", "null"], "default": "30m"}}, "required": ["pid"], "additionalProperties": False},
+        "description": (
+            "Attach Telegram completion notification to an already running non-interactive PID and return immediately. "
+            "AI usage: use this when a long process was started outside notify-mcp but should notify on completion. "
+            "For interactive/TUI/prompt processes prefer pty-mcp; for new non-interactive long jobs prefer run_and_notify."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "pid": {"type": "integer", "description": "Existing process PID to watch."},
+                "log_mode": {
+                    "type": "string",
+                    "enum": ["none", "tail", "live"],
+                    "default": "none",
+                    "description": "Log mode for Telegram. If 'tail' or 'live', log_file is required.",
+                },
+                "log_file": {
+                    "type": ["string", "null"],
+                    "description": "Path to a log file for log_mode='tail' or 'live'.",
+                },
+                "replace": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Use Telegram replace/edit mode when possible. Prefer true.",
+                },
+                "hard_timeout": {
+                    "type": ["string", "integer", "null"],
+                    "default": "30m",
+                    "description": "Maximum notify watcher lifetime, e.g. 30m. 0 disables. Default 30m.",
+                },
+            },
+            "required": ["pid"],
+            "additionalProperties": False,
+        },
         "handler": tool_attach_pid,
     },
     "attach_query": {
-        "description": "Attach notification to a process found by command substring. Non-interactive; fails on multiple matches unless first=true.",
-        "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}, "first": {"type": "boolean", "default": False}, "log_mode": {"type": "string", "enum": ["none", "tail", "live"], "default": "none"}, "log_file": {"type": ["string", "null"]}, "replace": {"type": "boolean", "default": True}, "hard_timeout": {"type": ["string", "integer", "null"], "default": "30m"}}, "required": ["query"], "additionalProperties": False},
+        "description": (
+            "Attach Telegram completion notification to a process found by command substring. Non-interactive and returns immediately. "
+            "Fails on multiple matches unless first=true. Prefer attach_pid when PID is known; prefer run_and_notify for new jobs."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Substring to search in process command lines."},
+                "first": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "If true, attach to the first matching process when multiple matches exist. Prefer false for safety.",
+                },
+                "log_mode": {
+                    "type": "string",
+                    "enum": ["none", "tail", "live"],
+                    "default": "none",
+                    "description": "Log mode for Telegram. If 'tail' or 'live', log_file is required.",
+                },
+                "log_file": {
+                    "type": ["string", "null"],
+                    "description": "Path to a log file for log_mode='tail' or 'live'.",
+                },
+                "replace": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Use Telegram replace/edit mode when possible. Prefer true.",
+                },
+                "hard_timeout": {
+                    "type": ["string", "integer", "null"],
+                    "default": "30m",
+                    "description": "Maximum notify watcher lifetime, e.g. 30m. 0 disables. Default 30m.",
+                },
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
         "handler": tool_attach_query,
     },
-    "job_status": {"description": "Small status check for a notify-mcp background job.", "inputSchema": {"type": "object", "properties": {"job_id": {"type": "string"}}, "required": ["job_id"], "additionalProperties": False}, "handler": tool_job_status},
-    "job_tail": {"description": "Return a bounded tail of a notify-mcp job log. Default is small to save tokens.", "inputSchema": {"type": "object", "properties": {"job_id": {"type": "string"}, "max_bytes": {"type": ["integer", "null"], "default": 6000}}, "required": ["job_id"], "additionalProperties": False}, "handler": tool_job_tail},
-    "list_jobs": {"description": "List recent notify-mcp jobs without dumping logs.", "inputSchema": {"type": "object", "properties": {"limit": {"type": ["integer", "null"], "default": 20}}, "additionalProperties": False}, "handler": tool_list_jobs},
-    "kill_job": {"description": "Send a signal to a notify-mcp job process group.", "inputSchema": {"type": "object", "properties": {"job_id": {"type": "string"}, "signal": {"type": ["string", "null"], "default": "TERM"}}, "required": ["job_id"], "additionalProperties": False}, "handler": tool_kill_job},
+    "job_status": {
+        "description": "Small bounded status check for a notify-mcp background job. Use sparingly; if Telegram notify is attached, do not repeatedly poll long-running jobs.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "job_id": {"type": "string", "description": "Job id returned by run_and_notify."},
+            },
+            "required": ["job_id"],
+            "additionalProperties": False,
+        },
+        "handler": tool_job_status,
+    },
+    "job_tail": {
+        "description": "Return a bounded tail of a notify-mcp job log. Token-saving rule: only request small tails for explicit debugging; do not use this as a polling loop.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "job_id": {"type": "string", "description": "Job id returned by run_and_notify."},
+                "max_bytes": {
+                    "type": ["integer", "null"],
+                    "default": 6000,
+                    "description": "Maximum log bytes to return. Keep small to avoid token waste.",
+                },
+            },
+            "required": ["job_id"],
+            "additionalProperties": False,
+        },
+        "handler": tool_job_tail,
+    },
+    "list_jobs": {
+        "description": "List recent notify-mcp jobs without dumping logs. Safe for a quick overview.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": ["integer", "null"], "default": 20, "description": "Maximum number of recent jobs to list."},
+            },
+            "additionalProperties": False,
+        },
+        "handler": tool_list_jobs,
+    },
+    "kill_job": {
+        "description": "Send a signal to a notify-mcp job process group. Use only when the user asks to stop/cancel a job or the job is clearly unsafe/stuck.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "job_id": {"type": "string", "description": "Job id returned by run_and_notify."},
+                "signal": {"type": ["string", "null"], "default": "TERM", "description": "Signal name: TERM, INT, or KILL. Prefer TERM first."},
+            },
+            "required": ["job_id"],
+            "additionalProperties": False,
+        },
+        "handler": tool_kill_job,
+    },
 }
 
 

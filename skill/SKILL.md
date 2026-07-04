@@ -64,6 +64,9 @@ When using this on shared servers, run `notify` as the same user that owns the T
 
 ## Preferred MCP mode
 
+The MCP tools are self-describing: `tools/list` includes the long-job rules in tool descriptions and input schema descriptions, so this skill is only a secondary reminder.
+
+
 When the `notify` MCP server is available, prefer MCP over shelling out to `/usr/local/bin/notify` manually.
 
 Use `run_and_notify` for long commands expected to take more than 3 minutes. It starts the command detached, attaches Telegram notification, may wait up to `wait_seconds` (normally <=180), and returns with `job_id`, `pid`, `log_file`, `alive`, and `status`.

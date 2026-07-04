@@ -81,6 +81,10 @@ Example MCP tool arguments:
 
 For AI agents, the rule is: if a command is expected to take more than 3 minutes, call `run_and_notify`, wait at most `wait_seconds` (normally <=180), and if the process is still alive return the `job_id`, `pid`, and `log_file` instead of polling. Telegram gets completion or hard-timeout notifications.
 
+### Built-in MCP instructions
+
+The Notify MCP server is self-describing. Its `tools/list` output includes the long-job rules directly in tool descriptions and JSON schema property descriptions, similar to `pty-mcp`. MCP clients should see when to use `run_and_notify`, when to stop waiting, and when to choose `pty-mcp` without relying on an external skill or AGENTS.md file.
+
 Returned fields include `job_id`, `pid`, `log_file`, `status_file`, `alive`, and `status`. Use `job_status` or `job_tail` only for small bounded checks. Telegram gets the completion message, so the AI does not need to keep polling or dump long logs into the chat.
 
 Available MCP tools:
