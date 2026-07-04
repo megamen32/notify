@@ -57,3 +57,40 @@ notify -n --pid 12345 --log-live /tmp/job.log --replace
 ## AI skill
 
 The skill lives in [`skill/SKILL.md`](skill/SKILL.md). Copy it into the skill directory of the AI runtime you use, or keep the repo checked out and point the runtime to this folder.
+
+## MCP server for AI agents
+
+This repo also includes a small stdio MCP server: `mcp/notify_mcp.py`.
+
+The most useful tool is `run_and_notify`: it starts a shell command detached in the background, stores logs under `~/.local/state/notify-mcp/jobs/<job_id>/`, attaches `/usr/local/bin/notify`, and returns immediately.
+
+Example MCP tool arguments:
+
+```json
+{
+  "command": "python3 long_job.py",
+  "cwd": "/home/roomhacker/project",
+  "log_mode": "tail",
+  "replace": true
+}
+```
+
+Returned fields include `job_id`, `pid`, `log_file`, and `status_file`. Use `job_status` or `job_tail` only for small bounded checks. Telegram gets the completion message, so the AI does not need to keep polling or dump long logs into the chat.
+
+Available MCP tools:
+
+- `run_and_notify` — start a new detached command and notify on completion.
+- `attach_pid` — attach notification to an existing PID.
+- `attach_query` — attach by process substring, non-interactive and deterministic.
+- `job_status` — small metadata/status check.
+- `job_tail` — bounded log tail.
+- `list_jobs` — recent jobs without log dumps.
+- `kill_job` — signal a job process group.
+
+Local GPTAdmin install example:
+
+```bash
+sudo gptadmin mcp add notify --install --status \
+  --cwd /home/roomhacker/notify \
+  -- /usr/bin/python3 /home/roomhacker/notify/mcp/notify_mcp.py
+```

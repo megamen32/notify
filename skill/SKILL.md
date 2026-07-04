@@ -61,3 +61,11 @@ If the query can match more than one process, do not use `--first` unless the us
 Do not expose `~/.config/secrets/notifier.env` in logs or repository files. It contains `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`.
 
 When using this on shared servers, run `notify` as the same user that owns the Telegram secrets and has permission to inspect the target process.
+
+## Preferred MCP mode
+
+When the `notify` MCP server is available, prefer MCP over shelling out to `/usr/local/bin/notify` manually.
+
+Use `run_and_notify` for long commands. It starts the command detached, attaches Telegram notification, and returns immediately with `job_id`, `pid`, and `log_file`.
+
+Use `job_tail` only with a small `max_bytes` when the user asks for a quick check. Do not repeatedly poll long jobs unless the user explicitly asks; Telegram will announce completion.
