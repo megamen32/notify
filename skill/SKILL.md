@@ -11,13 +11,13 @@ Use this skill when you start, supervise, or wait for a long-running Linux comma
 Never call plain `notify` from an AI agent. Always use the non-interactive flags so the command cannot open `fzf` or block on stdin:
 
 ```bash
-/usr/local/bin/notify --non-interactive --pid "$PID" --no-log --replace
+/usr/local/bin/notify --non-interactive --pid "$PID" --no-log --replace --hard-timeout 30m
 ```
 
 Equivalent short form:
 
 ```bash
-/usr/local/bin/notify -n --pid "$PID" --no-log --replace
+/usr/local/bin/notify -n --pid "$PID" --no-log --replace --hard-timeout 30m
 ```
 
 ## Typical workflow
@@ -27,7 +27,7 @@ Start a long command in background, capture its PID, then attach notify:
 ```bash
 long_running_command > /tmp/job.log 2>&1 &
 PID=$!
-/usr/local/bin/notify -n --pid "$PID" --log-tail /tmp/job.log --replace
+/usr/local/bin/notify -n --pid "$PID" --log-tail /tmp/job.log --replace --hard-timeout 30m
 ```
 
 Use `--log-live /path/to/log` only when the user explicitly wants Telegram messages for new log lines. Prefer `--log-tail` for lower noise.
@@ -66,6 +66,8 @@ When using this on shared servers, run `notify` as the same user that owns the T
 
 When the `notify` MCP server is available, prefer MCP over shelling out to `/usr/local/bin/notify` manually.
 
-Use `run_and_notify` for long commands. It starts the command detached, attaches Telegram notification, and returns immediately with `job_id`, `pid`, and `log_file`.
+Use `run_and_notify` for long commands expected to take more than 3 minutes. It starts the command detached, attaches Telegram notification, may wait up to `wait_seconds` (normally <=180), and returns with `job_id`, `pid`, `log_file`, `alive`, and `status`.
+
+Default `hard_timeout` is `30m`. If the process is still alive after that, notify sends a timeout message and stops watching.
 
 Use `job_tail` only with a small `max_bytes` when the user asks for a quick check. Do not repeatedly poll long jobs unless the user explicitly asks; Telegram will announce completion.

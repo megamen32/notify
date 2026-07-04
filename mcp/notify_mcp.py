@@ -30,6 +30,29 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def parse_duration_seconds(value: Any, default: int = 0) -> int:
+    if value is None or value == "":
+        return default
+    if isinstance(value, (int, float)):
+        return max(0, int(value))
+    text = str(value).strip().lower()
+    if not text:
+        return default
+    units = (("ms", 1 / 1000), ("s", 1), ("m", 60), ("h", 3600))
+    for suffix, mult in units:
+        if text.endswith(suffix):
+            num = text[: -len(suffix)].strip()
+            try:
+                seconds = float(num) * mult
+            except ValueError as e:
+                raise ValueError(f"invalid duration: {value!r}") from e
+            return max(0, int(seconds + 0.999))
+    try:
+        return max(0, int(float(text)))
+    except ValueError as e:
+        raise ValueError(f"invalid duration: {value!r}") from e
+
+
 def ensure_dirs() -> None:
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -86,7 +109,7 @@ def run_quick(args: List[str], cwd: Optional[str] = None, timeout: int = 15) -> 
     }
 
 
-def notify_args_for(pid: Optional[int] = None, query: Optional[str] = None, log_mode: str = "none", log_file: Optional[str] = None, replace: bool = True, first: bool = False) -> List[str]:
+def notify_args_for(pid: Optional[int] = None, query: Optional[str] = None, log_mode: str = "none", log_file: Optional[str] = None, replace: bool = True, first: bool = False, hard_timeout: Any = None) -> List[str]:
     if not NOTIFY_BIN.exists():
         raise FileNotFoundError(f"notify binary not found: {NOTIFY_BIN}")
     args = [str(NOTIFY_BIN), "--non-interactive"]
@@ -108,6 +131,9 @@ def notify_args_for(pid: Optional[int] = None, query: Optional[str] = None, log_
     else:
         raise ValueError("log_mode must be one of: none, tail, live")
 
+    if hard_timeout not in (None, "", 0, "0"):
+        args += ["--hard-timeout", str(hard_timeout)]
+
     if replace:
         args.append("--replace")
     return args
@@ -120,7 +146,8 @@ def tool_attach_pid(args: Dict[str, Any]) -> Dict[str, Any]:
     log_mode = str(args.get("log_mode") or "none")
     log_file = args.get("log_file")
     replace = bool(args.get("replace", True))
-    result = run_quick(notify_args_for(pid=pid, log_mode=log_mode, log_file=log_file, replace=replace))
+    hard_timeout = args.get("hard_timeout", "30m")
+    result = run_quick(notify_args_for(pid=pid, log_mode=log_mode, log_file=log_file, replace=replace, hard_timeout=hard_timeout))
     return {"ok": result["returncode"] == 0, "pid": pid, "notify": result}
 
 
@@ -132,7 +159,8 @@ def tool_attach_query(args: Dict[str, Any]) -> Dict[str, Any]:
     log_file = args.get("log_file")
     replace = bool(args.get("replace", True))
     first = bool(args.get("first", False))
-    result = run_quick(notify_args_for(query=query, log_mode=log_mode, log_file=log_file, replace=replace, first=first))
+    hard_timeout = args.get("hard_timeout", "30m")
+    result = run_quick(notify_args_for(query=query, log_mode=log_mode, log_file=log_file, replace=replace, first=first, hard_timeout=hard_timeout))
     return {"ok": result["returncode"] == 0, "query": query, "notify": result}
 
 
@@ -153,6 +181,9 @@ def tool_run_and_notify(args: Dict[str, Any]) -> Dict[str, Any]:
     if log_mode not in ("none", "tail", "live"):
         raise ValueError("log_mode must be one of: none, tail, live")
     replace = bool(args.get("replace", True))
+    hard_timeout = args.get("hard_timeout", "30m")
+    hard_timeout_seconds = parse_duration_seconds(hard_timeout, default=1800)
+    wait_seconds = min(parse_duration_seconds(args.get("wait_seconds", 0), default=0), hard_timeout_seconds or 10**9)
     note = str(args.get("note") or "")
 
     job_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
@@ -170,6 +201,9 @@ def tool_run_and_notify(args: Dict[str, Any]) -> Dict[str, Any]:
         "status_file": str(status_file),
         "created_at": now_iso(),
         "note": note,
+        "hard_timeout": hard_timeout,
+        "hard_timeout_seconds": hard_timeout_seconds,
+        "wait_seconds": wait_seconds,
         "state": "starting",
     }
     json_write(job_dir / "meta.json", meta)
@@ -212,10 +246,21 @@ exit "$rc"
     json_write(job_dir / "meta.json", meta)
 
     notify_log_file = str(log_file) if log_mode in ("tail", "live") else None
-    notify_result = run_quick(notify_args_for(pid=pid, log_mode=log_mode, log_file=notify_log_file, replace=replace))
+    notify_result = run_quick(notify_args_for(pid=pid, log_mode=log_mode, log_file=notify_log_file, replace=replace, hard_timeout=hard_timeout))
     meta["notify"] = notify_result
     meta["notify_attached"] = notify_result["returncode"] == 0
     json_write(job_dir / "meta.json", meta)
+
+    waited_seconds = 0.0
+    if wait_seconds > 0:
+        deadline = time.time() + wait_seconds
+        while time.time() < deadline and is_pid_alive(pid):
+            sleep_for = min(2.0, max(0.1, deadline - time.time()))
+            time.sleep(sleep_for)
+        waited_seconds = max(0.0, wait_seconds - max(0.0, deadline - time.time()))
+
+    status_snapshot = json_read(status_file, {"state": "running"})
+    alive_snapshot = is_pid_alive(pid)
 
     return {
         "ok": notify_result["returncode"] == 0,
@@ -226,9 +271,15 @@ exit "$rc"
         "status_file": str(status_file),
         "runner": str(runner),
         "notify_attached": notify_result["returncode"] == 0,
+        "hard_timeout": hard_timeout,
+        "hard_timeout_seconds": hard_timeout_seconds,
+        "wait_seconds": wait_seconds,
+        "waited_seconds": round(waited_seconds, 3),
+        "alive": alive_snapshot,
+        "status": status_snapshot,
         "notify_stdout": notify_result["stdout"][-3000:],
         "notify_stderr": notify_result["stderr"][-3000:],
-        "message": "Started in background and returned immediately. Use job_status/job_tail for small checks; Telegram will get completion notification.",
+        "message": "Started in background with Telegram notification. If still alive after wait_seconds, stop waiting and return this job_id instead of polling and burning tokens.",
     }
 
 
@@ -296,18 +347,18 @@ def tool_kill_job(args: Dict[str, Any]) -> Dict[str, Any]:
 
 TOOLS = {
     "run_and_notify": {
-        "description": "Start a long shell command in the background, attach /usr/local/bin/notify, and return immediately with job_id, pid, and log_file. Best tool for AI agents to avoid waiting and wasting tokens.",
-        "inputSchema": {"type": "object", "properties": {"command": {"type": "string"}, "cwd": {"type": ["string", "null"], "default": "/home/roomhacker"}, "log_mode": {"type": "string", "enum": ["none", "tail", "live"], "default": "tail"}, "replace": {"type": "boolean", "default": True}, "note": {"type": ["string", "null"]}}, "required": ["command"], "additionalProperties": False},
+        "description": "For commands likely to exceed 3 minutes: start detached in the background, attach /usr/local/bin/notify, optionally wait up to wait_seconds, then return job_id/pid/log_file instead of burning tokens. Default hard_timeout is 30m.",
+        "inputSchema": {"type": "object", "properties": {"command": {"type": "string"}, "cwd": {"type": ["string", "null"], "default": "/home/roomhacker"}, "log_mode": {"type": "string", "enum": ["none", "tail", "live"], "default": "tail"}, "replace": {"type": "boolean", "default": True}, "note": {"type": ["string", "null"]}, "wait_seconds": {"type": ["integer", "null"], "default": 0, "description": "Optional small wait before returning. Use <=180 for tasks expected around 3 minutes; use 0 to return immediately."}, "hard_timeout": {"type": ["string", "integer", "null"], "default": "30m", "description": "Maximum notify watcher lifetime, e.g. 1800, 30m, 1h. Default 30m."}}, "required": ["command"], "additionalProperties": False},
         "handler": tool_run_and_notify,
     },
     "attach_pid": {
         "description": "Attach Telegram completion notification to an already running PID and return immediately.",
-        "inputSchema": {"type": "object", "properties": {"pid": {"type": "integer"}, "log_mode": {"type": "string", "enum": ["none", "tail", "live"], "default": "none"}, "log_file": {"type": ["string", "null"]}, "replace": {"type": "boolean", "default": True}}, "required": ["pid"], "additionalProperties": False},
+        "inputSchema": {"type": "object", "properties": {"pid": {"type": "integer"}, "log_mode": {"type": "string", "enum": ["none", "tail", "live"], "default": "none"}, "log_file": {"type": ["string", "null"]}, "replace": {"type": "boolean", "default": True}, "hard_timeout": {"type": ["string", "integer", "null"], "default": "30m"}}, "required": ["pid"], "additionalProperties": False},
         "handler": tool_attach_pid,
     },
     "attach_query": {
         "description": "Attach notification to a process found by command substring. Non-interactive; fails on multiple matches unless first=true.",
-        "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}, "first": {"type": "boolean", "default": False}, "log_mode": {"type": "string", "enum": ["none", "tail", "live"], "default": "none"}, "log_file": {"type": ["string", "null"]}, "replace": {"type": "boolean", "default": True}}, "required": ["query"], "additionalProperties": False},
+        "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}, "first": {"type": "boolean", "default": False}, "log_mode": {"type": "string", "enum": ["none", "tail", "live"], "default": "none"}, "log_file": {"type": ["string", "null"]}, "replace": {"type": "boolean", "default": True}, "hard_timeout": {"type": ["string", "integer", "null"], "default": "30m"}}, "required": ["query"], "additionalProperties": False},
         "handler": tool_attach_query,
     },
     "job_status": {"description": "Small status check for a notify-mcp background job.", "inputSchema": {"type": "object", "properties": {"job_id": {"type": "string"}}, "required": ["job_id"], "additionalProperties": False}, "handler": tool_job_status},

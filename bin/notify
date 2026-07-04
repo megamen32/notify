@@ -23,7 +23,7 @@ notify
   notify --pid 12345 --log-live /tmp/job.log --replace
   notify --pid 12345 --log-tail /tmp/job.log --replace
   notify --non-interactive --query sync_sessions --no-log --replace
-  notify -n --query sync_sessions --first --log-tail /tmp/job.log
+  notify -n --query sync_sessions --first --log-tail /tmp/job.log --hard-timeout 30m
   notify --test
 
 Неинтерактивный режим для ИИ/cron/CI:
@@ -31,6 +31,7 @@ notify
   --first                 если query нашёл несколько процессов, взять первый PID
   --no-log                явно не выбирать и не читать лог
   --replace               автоматически заменить старый watcher для PID
+  --hard-timeout DURATION  максимум следить за процессом: 1800, 30m, 1h; 0 — без лимита
 EOF
 }
 
@@ -85,6 +86,47 @@ normalize_timeout_seconds() {
 
 TIMEOUT_SECONDS="$(normalize_timeout_seconds "$TIMEOUT_MS")"
 TG_LIMIT=4096
+
+parse_duration_seconds() {
+  local value="${1:-}"
+
+  if [ -z "$value" ]; then
+    echo "0"
+    return
+  fi
+
+  value="$(printf "%s" "$value" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+
+  case "$value" in
+    *ms)
+      local n="${value%ms}"
+      n="$(printf "%s" "$n" | tr -cd '0-9')"
+      [ -z "$n" ] && n=0
+      echo "$(( (n + 999) / 1000 ))"
+      ;;
+    *s)
+      local n="${value%s}"
+      n="$(printf "%s" "$n" | tr -cd '0-9')"
+      echo "${n:-0}"
+      ;;
+    *m)
+      local n="${value%m}"
+      n="$(printf "%s" "$n" | tr -cd '0-9')"
+      [ -z "$n" ] && n=0
+      echo "$((n * 60))"
+      ;;
+    *h)
+      local n="${value%h}"
+      n="$(printf "%s" "$n" | tr -cd '0-9')"
+      [ -z "$n" ] && n=0
+      echo "$((n * 3600))"
+      ;;
+    *)
+      local n="$(printf "%s" "$value" | tr -cd '0-9')"
+      echo "${n:-0}"
+      ;;
+  esac
+}
 
 now() {
   date "+%Y-%m-%d %H:%M:%S"
@@ -592,7 +634,7 @@ notify
   notify --pid 12345 --log-live /tmp/job.log --replace
   notify --pid 12345 --log-tail /tmp/job.log --replace
   notify --non-interactive --query sync_sessions --no-log --replace
-  notify -n --query sync_sessions --first --log-tail /tmp/job.log
+  notify -n --query sync_sessions --first --log-tail /tmp/job.log --hard-timeout 30m
   notify --test
 
 Неинтерактивный режим для ИИ/cron/CI:
@@ -600,6 +642,7 @@ notify
   --first                 если query нашёл несколько процессов, взять первый PID
   --no-log                явно не выбирать и не читать лог
   --replace               автоматически заменить старый watcher для PID
+  --hard-timeout DURATION  максимум следить за процессом: 1800, 30m, 1h; 0 — без лимита
 EOF
 }
 
@@ -610,6 +653,7 @@ AUTO_LOG_FILE=""
 REPLACE_WATCHER="false"
 NON_INTERACTIVE="false"
 FIRST_MATCH="false"
+HARD_TIMEOUT_SECONDS="0"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -658,6 +702,10 @@ time: $(now)"
     --first)
       FIRST_MATCH="true"
       shift
+      ;;
+    --hard-timeout)
+      HARD_TIMEOUT_SECONDS="$(parse_duration_seconds "${2:-}")"
+      shift 2
       ;;
     *)
       QUERY="${QUERY} ${1}"
@@ -791,6 +839,12 @@ log mode: $LOG_MODE
 log file: $LOG_FILE"
 fi
 
+if [ "${HARD_TIMEOUT_SECONDS:-0}" -gt 0 ]; then
+  TEXT="$TEXT
+
+hard-timeout: ${HARD_TIMEOUT_SECONDS}s"
+fi
+
 TEXT="$TEXT
 
 Сообщу, когда завершится."
@@ -807,6 +861,33 @@ fi
 
 (
   while is_same_process_alive "$PID" "$START_ID"; do
+    if [ "${HARD_TIMEOUT_SECONDS:-0}" -gt 0 ]; then
+      NOW_TS="$(date +%s)"
+      ELAPSED="$((NOW_TS - START_TS))"
+
+      if [ "$ELAPSED" -ge "$HARD_TIMEOUT_SECONDS" ]; then
+        if [ -n "$LIVE_LOG_PID" ]; then
+          kill_process_tree "$LIVE_LOG_PID" 2>/dev/null || true
+        fi
+
+        TIMEOUT_HUMAN="$(human_duration "$ELAPSED")"
+        TIMEOUT_TEXT="⏱️ notify: hard-timeout достигнут
+
+PID: $PID
+elapsed: $TIMEOUT_HUMAN
+hard-timeout: ${HARD_TIMEOUT_SECONDS}s
+process: $START_CMD
+server: $(hostname)
+time: $(now)
+
+Процесс всё ещё жив. Watcher остановлен, чтобы не висеть бесконечно."
+        echo "$TIMEOUT_TEXT" >> "$STATE_DIR/done.log"
+        send_tg "$TIMEOUT_TEXT"
+        rm -f "$LOCK_FILE"
+        exit 124
+      fi
+    fi
+
     sleep 10
   done
 
