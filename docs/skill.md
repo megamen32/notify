@@ -1,5 +1,7 @@
 # AI skill status
 
+**Languages:** English | [Русский](skill.ru.md) | [中文](skill.zh.md)
+
 The skill is now optional.
 
 Notify MCP embeds the important behavior directly in MCP metadata:

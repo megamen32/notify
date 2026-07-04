@@ -1,6 +1,6 @@
 {
   "name": "notify-mcp",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "MCP server that lets AI agents run long jobs without burning tokens while waiting",
   "type": "module",
   "license": "MIT",
@@ -27,7 +27,7 @@
     "notify-install": "npm/install-notify.js"
   },
   "files": [
-    "README.md",
+    "README*.md",
     "LICENSE",
     "bin/notify",
     "mcp/notify_mcp.py",

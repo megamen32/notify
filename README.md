@@ -1,5 +1,7 @@
 # Notify MCP
 
+**Languages:** English | [Русский](README.ru.md) | [中文](README.zh.md)
+
 <p align="center">
   <img src="assets/hero.svg" alt="Notify MCP saves agent tokens during long waits" width="100%">
 </p>

@@ -1,5 +1,7 @@
 # `/usr/local/bin/notify` CLI
 
+**Languages:** English | [Русский](cli.ru.md) | [中文](cli.zh.md)
+
 `notify` is a Bash utility that watches a Linux process and sends Telegram messages when watching starts, when optional logs are streamed, and when the process exits.
 
 The MCP server uses this CLI under the hood.

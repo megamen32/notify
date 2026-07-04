@@ -1,5 +1,7 @@
 # Notify MCP server
 
+**Languages:** English | [Русский](mcp.ru.md) | [中文](mcp.zh.md)
+
 Notify MCP is a stdio MCP server for non-interactive long-running shell jobs. It starts commands detached, writes logs to disk, attaches `/usr/local/bin/notify`, and returns without keeping the agent awake.
 
 ## Main tool: `run_and_notify`
