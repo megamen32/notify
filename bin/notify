@@ -1,0 +1,861 @@
+#!/usr/bin/env bash
+set -u
+
+early_usage() {
+  cat <<'EOF'
+notify
+
+Обычное использование:
+  notify
+  notify часть_команды
+  notify PID
+
+Примеры:
+  notify
+  notify sync_sessions
+  notify scripts_for_accounts/sync_sessions_and_ensure_backups.py
+  notify 12345
+
+Для автоматизаций:
+  notify --query sync_sessions
+  notify --pid 12345
+  notify --replace
+  notify --pid 12345 --log-live /tmp/job.log --replace
+  notify --pid 12345 --log-tail /tmp/job.log --replace
+  notify --non-interactive --query sync_sessions --no-log --replace
+  notify -n --query sync_sessions --first --log-tail /tmp/job.log
+  notify --test
+
+Неинтерактивный режим для ИИ/cron/CI:
+  -n, --non-interactive  запрещает prompts/fzf/read и по умолчанию не выбирает лог
+  --first                 если query нашёл несколько процессов, взять первый PID
+  --no-log                явно не выбирать и не читать лог
+  --replace               автоматически заменить старый watcher для PID
+EOF
+}
+
+for arg in "$@"; do
+  case "$arg" in
+    --help|-h)
+      early_usage
+      exit 0
+      ;;
+  esac
+done
+
+
+SECRETS_FILE="$HOME/.config/secrets/notifier.env"
+STATE_DIR="$HOME/.local/state/notify"
+mkdir -p "$STATE_DIR"
+
+if [ -f "$SECRETS_FILE" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$SECRETS_FILE"
+  set +a
+else
+  echo "❌ Не найден файл секретов: $SECRETS_FILE"
+  exit 1
+fi
+
+BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
+CHAT_ID="${TELEGRAM_CHAT_ID:-}"
+PROXY="${TELEGRAM_PROXY_URL:-${TELEGRAM_PROXY:-}}"
+TIMEOUT_MS="${TELEGRAM_TIMEOUT_MS:-3500}"
+
+if [ -z "$BOT_TOKEN" ] || [ -z "$CHAT_ID" ]; then
+  echo "❌ В $SECRETS_FILE нет TELEGRAM_BOT_TOKEN или TELEGRAM_CHAT_ID"
+  exit 1
+fi
+
+normalize_timeout_seconds() {
+  local timeout_ms="${1:-3500}"
+
+  # Оставляем только цифры, чтобы не сломаться от "3500ms", "3500 ", CRLF и т.п.
+  timeout_ms="$(printf "%s" "$timeout_ms" | tr -cd '0-9')"
+
+  if [ -z "$timeout_ms" ]; then
+    timeout_ms="3500"
+  fi
+
+  # Округляем миллисекунды вверх до целых секунд.
+  # 3500 -> 4, 1000 -> 1, 1 -> 1
+  echo "$(( (timeout_ms + 999) / 1000 ))"
+}
+
+TIMEOUT_SECONDS="$(normalize_timeout_seconds "$TIMEOUT_MS")"
+TG_LIMIT=4096
+
+now() {
+  date "+%Y-%m-%d %H:%M:%S"
+}
+
+human_duration() {
+  local total="$1"
+  local h=$((total / 3600))
+  local m=$(((total % 3600) / 60))
+  local s=$((total % 60))
+
+  if [ "$h" -gt 0 ]; then
+    printf "%dч %dм %dс" "$h" "$m" "$s"
+  elif [ "$m" -gt 0 ]; then
+    printf "%dм %dс" "$m" "$s"
+  else
+    printf "%dс" "$s"
+  fi
+}
+
+send_tg() {
+  local text="$1"
+  local log_file="$STATE_DIR/telegram.log"
+
+  if [ -n "$PROXY" ]; then
+    curl -sS \
+      --max-time "$TIMEOUT_SECONDS" \
+      --proxy "$PROXY" \
+      -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+      -d chat_id="$CHAT_ID" \
+      -d disable_web_page_preview=true \
+      --data-urlencode text="$text" \
+      >>"$log_file" \
+      2>&1
+  else
+    curl -sS \
+      --max-time "$TIMEOUT_SECONDS" \
+      -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+      -d chat_id="$CHAT_ID" \
+      -d disable_web_page_preview=true \
+      --data-urlencode text="$text" \
+      >>"$log_file" \
+      2>&1
+  fi
+}
+
+proc_short_cmd() {
+  local pid="$1"
+  ps -p "$pid" -o cmd= 2>/dev/null | sed 's/[[:space:]]\+/ /g' | cut -c 1-240
+}
+
+proc_line() {
+  local pid="$1"
+  ps -p "$pid" -o pid=,ppid=,etime=,cmd= 2>/dev/null | sed 's/^[[:space:]]*//'
+}
+
+proc_start_id() {
+  local pid="$1"
+
+  if [ -r "/proc/$pid/stat" ]; then
+    awk '{print $22}' "/proc/$pid/stat" 2>/dev/null || true
+  else
+    echo ""
+  fi
+}
+
+is_same_process_alive() {
+  local pid="$1"
+  local start_id="$2"
+
+  kill -0 "$pid" 2>/dev/null || return 1
+
+  if [ -n "$start_id" ]; then
+    [ "$(proc_start_id "$pid")" = "$start_id" ] || return 1
+  fi
+
+  return 0
+}
+
+kill_process_tree() {
+  local root_pid="$1"
+
+  if [ -z "$root_pid" ]; then
+    return
+  fi
+
+  if ! kill -0 "$root_pid" 2>/dev/null; then
+    return
+  fi
+
+  local children
+  children="$(pgrep -P "$root_pid" 2>/dev/null || true)"
+
+  if [ -n "$children" ]; then
+    local child
+    while IFS= read -r child; do
+      [ -n "$child" ] && kill_process_tree "$child"
+    done <<< "$children"
+  fi
+
+  kill "$root_pid" 2>/dev/null || true
+  sleep 0.2
+
+  if kill -0 "$root_pid" 2>/dev/null; then
+    kill -9 "$root_pid" 2>/dev/null || true
+  fi
+}
+
+list_processes() {
+  local query="${1:-}"
+
+  if [ -n "$query" ]; then
+    ps -eo pid=,ppid=,etime=,cmd= \
+      | grep -F "$query" \
+      | grep -v "grep -F" \
+      | grep -v " notify " \
+      | grep -v "/usr/local/bin/notify" \
+      || true
+  else
+    ps -u "${USER:-$(id -un)}" -o pid=,ppid=,etime=,cmd= \
+      | grep -v " notify " \
+      | grep -v "/usr/local/bin/notify" \
+      | grep -v " ps -u " \
+      || true
+  fi
+}
+
+choose_pid() {
+  local query="${1:-}"
+  local lines
+  lines="$(list_processes "$query")"
+
+  if [ -z "$lines" ]; then
+    return 1
+  fi
+
+  if command -v fzf >/dev/null 2>&1; then
+    local cols
+    local cmd_width
+
+    cols="$(tput cols 2>/dev/null || echo 160)"
+    cmd_width="$((cols - 26))"
+    [ "$cmd_width" -lt 80 ] && cmd_width=80
+
+    echo "$lines" \
+      | awk -v w="$cmd_width" '{
+          pid=$1
+          ppid=$2
+          etime=$3
+          $1=""; $2=""; $3="";
+          sub(/^[ \t]+/, "", $0)
+          cmd=$0
+          if (length(cmd) > w) cmd=substr(cmd, 1, w) "..."
+          printf "%s\t%s\t%s\t%s\n", pid, ppid, etime, cmd
+        }' \
+      | fzf \
+          --height=95% \
+          --border \
+          --no-hscroll \
+          --delimiter=$'\t' \
+          --with-nth=1,3,4 \
+          --prompt="Выбери процесс > " \
+          --header="PID | время | команда. Полная команда снизу." \
+          --preview='pid=$(echo {} | cut -f1); cols=${FZF_PREVIEW_COLUMNS:-120}; ps -ww -p "$pid" -o pid=,ppid=,etime=,cmd= | fold -s -w "$cols"' \
+          --preview-window='down,65%,wrap,border-top' \
+      | cut -f1
+
+    return
+  fi
+
+  echo "Найденные процессы:" >&2
+  echo >&2
+
+  local tmp_file
+  tmp_file="$(mktemp)"
+
+  local i=1
+  while IFS= read -r line; do
+    local pid
+    pid="$(echo "$line" | awk '{print $1}')"
+    printf "%2d) %s\n" "$i" "$line" >&2
+    echo "$i $pid" >> "$tmp_file"
+    i=$((i + 1))
+  done <<< "$lines"
+
+  echo >&2
+  printf "Введи номер процесса: " >&2
+  read -r choice
+
+  awk -v c="$choice" '$1 == c { print $2 }' "$tmp_file"
+  rm -f "$tmp_file"
+}
+
+resolve_pid() {
+  local query="${1:-}"
+
+  if [ -z "$query" ]; then
+    if [ "${NON_INTERACTIVE:-false}" = "true" ]; then
+      echo "❌ notify: в неинтерактивном режиме нужен --pid или --query" >&2
+      return 1
+    fi
+
+    choose_pid ""
+    return
+  fi
+
+  if [[ "$query" =~ ^[0-9]+$ ]]; then
+    echo "$query"
+    return
+  fi
+
+  local pids
+  pids="$(list_processes "$query" | awk '{print $1}')"
+
+  local count
+  count="$(echo "$pids" | sed '/^$/d' | wc -l)"
+
+  if [ "$count" -eq 0 ]; then
+    return 1
+  fi
+
+  if [ "$count" -eq 1 ]; then
+    echo "$pids"
+    return
+  fi
+
+  if [ "$count" -gt 1 ] && [ "${FIRST_MATCH:-false}" = "true" ]; then
+    echo "$pids" | sed -n '1p'
+    return
+  fi
+
+  if [ "${NON_INTERACTIVE:-false}" = "true" ]; then
+    echo "❌ notify: query нашёл несколько процессов, а stdin/prompts запрещены" >&2
+    echo "query: $query" >&2
+    echo >&2
+    echo "Совпадения:" >&2
+    list_processes "$query" >&2
+    echo >&2
+    echo "Укажи точный --pid или добавь --first для первого совпадения." >&2
+    return 2
+  fi
+
+  choose_pid "$query"
+}
+
+list_log_files_for_pid() {
+  local pid="$1"
+
+  if [ ! -d "/proc/$pid/fd" ]; then
+    return
+  fi
+
+  for fd in /proc/"$pid"/fd/*; do
+    local target
+    target="$(readlink "$fd" 2>/dev/null || true)"
+
+    case "$target" in
+      *.log|*.txt|*.out|*.err)
+        if [ -f "$target" ]; then
+          printf "%s\n" "$target"
+        fi
+        ;;
+    esac
+  done | awk '!seen[$0]++'
+}
+
+choose_log_mode_and_file() {
+  local pid="$1"
+  local files
+  files="$(list_log_files_for_pid "$pid")"
+
+  if [ -z "$files" ]; then
+    echo "|"
+    return
+  fi
+
+  echo >&2
+  echo "Нашёл файлы, куда процесс может писать:" >&2
+  echo >&2
+
+  local selected=""
+
+  if command -v fzf >/dev/null 2>&1; then
+    selected="$(
+      echo "$files" \
+        | fzf \
+            --height=95% \
+            --border \
+            --no-hscroll \
+            --prompt="Выбери лог > " \
+            --header="Enter — выбрать файл. Esc — не следить за логом." \
+            --preview='
+              file={}
+              cols=${FZF_PREVIEW_COLUMNS:-120}
+
+              if [ ! -f "$file" ]; then
+                echo "Файл недоступен: $file"
+                exit 0
+              fi
+
+              echo "file: $file"
+              echo
+              echo "size: $(du -h "$file" 2>/dev/null | awk "{print \$1}")"
+              echo "mtime: $(stat -c "%y" "$file" 2>/dev/null | cut -d. -f1)"
+              echo
+              echo "----- последние строки -----"
+              tail -n 120 "$file" 2>/dev/null | fold -s -w "$cols"
+            ' \
+            --preview-window='down,70%,wrap,border-top'
+    )"
+
+    if [ -z "$selected" ]; then
+      echo "|"
+      return
+    fi
+  else
+    local tmp_file
+    tmp_file="$(mktemp)"
+
+    local i=1
+    while IFS= read -r file; do
+      printf "%2d) %s\n" "$i" "$file" >&2
+      echo "$i $file" >> "$tmp_file"
+
+      echo "    --- последние строки ---" >&2
+      tail -n 8 "$file" 2>/dev/null \
+        | sed 's/^/    /' \
+        | fold -s -w "$(tput cols 2>/dev/null || echo 120)" >&2
+      echo >&2
+
+      i=$((i + 1))
+    done <<< "$files"
+
+    echo "Enter — не следить за логом" >&2
+    printf "Номер файла: " >&2
+    read -r choice
+
+    if [ -z "$choice" ]; then
+      rm -f "$tmp_file"
+      echo "|"
+      return
+    fi
+
+    selected="$(awk -v c="$choice" '$1 == c { $1=""; sub(/^ /, ""); print }' "$tmp_file")"
+    rm -f "$tmp_file"
+
+    if [ -z "$selected" ]; then
+      echo "|"
+      return
+    fi
+  fi
+
+  echo >&2
+  echo "Выбран лог:" >&2
+  echo "  $selected" >&2
+  echo >&2
+  echo "Что делать с логом?" >&2
+  echo "  Enter — не следить" >&2
+  echo "  1     — слать новые строки в Telegram" >&2
+  echo "  2     — после завершения прислать последние строки" >&2
+  echo >&2
+  printf "Режим: " >&2
+  read -r mode
+
+  if [ -z "$mode" ]; then
+    echo "|"
+    return
+  fi
+
+  if [ "$mode" = "1" ]; then
+    echo "live|$selected"
+  elif [ "$mode" = "2" ]; then
+    echo "tail|$selected"
+  else
+    echo "|"
+  fi
+}
+
+choose_replace_existing_watcher() {
+  local old_watcher_pid="$1"
+
+  if command -v fzf >/dev/null 2>&1; then
+    local selected
+    selected="$(
+      printf "%s\n%s\n" \
+        "replace	Заменить старый watcher новым" \
+        "keep	Оставить старый watcher и выйти" \
+        | fzf \
+            --height=8 \
+            --border \
+            --no-hscroll \
+            --delimiter=$'\t' \
+            --with-nth=2 \
+            --prompt="Watcher $old_watcher_pid уже есть > "
+    )"
+
+    [ "${selected%%$'\t'*}" = "replace" ]
+    return
+  fi
+
+  local answer
+  printf "Заменить старый watcher новым? [Y/n]: "
+  read -r answer
+
+  case "$answer" in
+    ""|y|Y|yes|YES|Yes|д|Д|да|Да|ДА|1)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+tail_by_budget() {
+  local file="$1"
+  local budget="$2"
+
+  if [ ! -f "$file" ]; then
+    return
+  fi
+
+  python3 - "$file" "$budget" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+budget = int(sys.argv[2])
+
+try:
+    lines = path.read_text(errors="replace").splitlines()
+except Exception as e:
+    print(f"Не удалось прочитать лог: {e}")
+    raise SystemExit
+
+selected = []
+total = 0
+
+for line in reversed(lines):
+    add = len(line) + 1
+    if total + add > budget:
+        break
+    selected.append(line)
+    total += add
+
+print("\n".join(reversed(selected)))
+PY
+}
+
+send_live_log_line() {
+  local pid="$1"
+  local file="$2"
+  local line="$3"
+
+  local prefix="📄 notify log
+
+PID: $pid
+file: $file
+
+"
+  local budget=$((TG_LIMIT - ${#prefix} - 32))
+  local trimmed
+  trimmed="$(printf "%s" "$line" | tail -c "$budget")"
+
+  send_tg "${prefix}${trimmed}"
+}
+
+start_live_log_watcher() {
+  local pid="$1"
+  local start_id="$2"
+  local file="$3"
+
+  (
+    tail -n 0 -F "$file" 2>/dev/null | while IFS= read -r line; do
+      if ! is_same_process_alive "$pid" "$start_id"; then
+        break
+      fi
+
+      send_live_log_line "$pid" "$file" "$line"
+    done
+  ) >"$STATE_DIR/log_live_${pid}.out" 2>"$STATE_DIR/log_live_${pid}.err" &
+
+  echo "$!"
+}
+
+usage() {
+  cat <<'EOF'
+notify
+
+Обычное использование:
+  notify
+  notify часть_команды
+  notify PID
+
+Примеры:
+  notify
+  notify sync_sessions
+  notify scripts_for_accounts/sync_sessions_and_ensure_backups.py
+  notify 12345
+
+Для автоматизаций:
+  notify --query sync_sessions
+  notify --pid 12345
+  notify --replace
+  notify --pid 12345 --log-live /tmp/job.log --replace
+  notify --pid 12345 --log-tail /tmp/job.log --replace
+  notify --non-interactive --query sync_sessions --no-log --replace
+  notify -n --query sync_sessions --first --log-tail /tmp/job.log
+  notify --test
+
+Неинтерактивный режим для ИИ/cron/CI:
+  -n, --non-interactive  запрещает prompts/fzf/read и по умолчанию не выбирает лог
+  --first                 если query нашёл несколько процессов, взять первый PID
+  --no-log                явно не выбирать и не читать лог
+  --replace               автоматически заменить старый watcher для PID
+EOF
+}
+
+QUERY=""
+PID=""
+AUTO_LOG_MODE=""
+AUTO_LOG_FILE=""
+REPLACE_WATCHER="false"
+NON_INTERACTIVE="false"
+FIRST_MATCH="false"
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    --test)
+      TEXT="✅ notify test
+server: $(hostname)
+time: $(now)"
+      echo "$TEXT"
+      send_tg "$TEXT"
+      exit 0
+      ;;
+    --query)
+      QUERY="${2:-}"
+      shift 2
+      ;;
+    --pid)
+      PID="${2:-}"
+      shift 2
+      ;;
+    --log-live)
+      AUTO_LOG_MODE="live"
+      AUTO_LOG_FILE="${2:-}"
+      shift 2
+      ;;
+    --log-tail)
+      AUTO_LOG_MODE="tail"
+      AUTO_LOG_FILE="${2:-}"
+      shift 2
+      ;;
+    --no-log)
+      AUTO_LOG_MODE="none"
+      shift
+      ;;
+    --replace)
+      REPLACE_WATCHER="true"
+      shift
+      ;;
+    --non-interactive|-n|--yes)
+      NON_INTERACTIVE="true"
+      shift
+      ;;
+    --first)
+      FIRST_MATCH="true"
+      shift
+      ;;
+    *)
+      QUERY="${QUERY} ${1}"
+      shift
+      ;;
+  esac
+done
+
+QUERY="$(echo "${QUERY:-}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+
+if [ -z "$PID" ]; then
+  PID="$(resolve_pid "$QUERY" || true)"
+fi
+
+if [ -z "${PID:-}" ]; then
+  TEXT="❌ notify: процесс не найден
+query: ${QUERY:-<интерактивный выбор>}
+server: $(hostname)
+time: $(now)"
+
+  echo "$TEXT"
+  send_tg "$TEXT"
+  exit 1
+fi
+
+if ! [[ "$PID" =~ ^[0-9]+$ ]]; then
+  echo "❌ Некорректный PID: $PID"
+  exit 1
+fi
+
+if ! kill -0 "$PID" 2>/dev/null; then
+  echo "❌ PID $PID уже не живой"
+  exit 1
+fi
+
+START_ID="$(proc_start_id "$PID")"
+START_TS="$(date +%s)"
+START_CMD="$(proc_short_cmd "$PID")"
+START_INFO="$(proc_line "$PID")"
+
+if [ -z "$START_CMD" ]; then
+  echo "❌ Не смог прочитать команду процесса PID $PID"
+  exit 1
+fi
+
+LOCK_FILE="$STATE_DIR/watcher_${PID}.lock"
+WATCHER_OUT="$STATE_DIR/watcher_${PID}.out"
+WATCHER_ERR="$STATE_DIR/watcher_${PID}.err"
+
+if [ -f "$LOCK_FILE" ]; then
+  OLD_WATCHER_PID="$(cat "$LOCK_FILE" 2>/dev/null || true)"
+
+  if [ -n "$OLD_WATCHER_PID" ] && kill -0 "$OLD_WATCHER_PID" 2>/dev/null; then
+    echo "⚠️ За PID $PID уже следит watcher $OLD_WATCHER_PID"
+    echo
+    echo "Старый watcher:"
+    ps -fp "$OLD_WATCHER_PID" 2>/dev/null || true
+
+    OLD_CHILDREN="$(pgrep -a -P "$OLD_WATCHER_PID" 2>/dev/null || true)"
+    if [ -n "$OLD_CHILDREN" ]; then
+      echo
+      echo "Дочерние процессы:"
+      echo "$OLD_CHILDREN"
+    fi
+
+    echo
+    echo "stdout: $WATCHER_OUT"
+    echo "stderr: $WATCHER_ERR"
+    echo
+
+    if [ "$REPLACE_WATCHER" = "true" ]; then
+      echo "🧹 Заменяю старый watcher автоматически..."
+      kill_process_tree "$OLD_WATCHER_PID"
+      rm -f "$LOCK_FILE"
+    elif [ -t 0 ]; then
+      if choose_replace_existing_watcher "$OLD_WATCHER_PID"; then
+        echo "🧹 Убиваю старый watcher $OLD_WATCHER_PID..."
+        kill_process_tree "$OLD_WATCHER_PID"
+        rm -f "$LOCK_FILE"
+        echo "✅ Старый watcher убит, запускаю новый."
+      else
+        echo "Оставил старый watcher."
+        exit 0
+      fi
+    else
+      echo "Не интерактивный режим. Старый watcher оставлен."
+      echo "Для автоматической замены используй: --replace"
+      exit 0
+    fi
+  else
+    rm -f "$LOCK_FILE"
+  fi
+fi
+
+LOG_MODE=""
+LOG_FILE=""
+
+if [ "$AUTO_LOG_MODE" = "live" ] || [ "$AUTO_LOG_MODE" = "tail" ]; then
+  LOG_MODE="$AUTO_LOG_MODE"
+  LOG_FILE="$AUTO_LOG_FILE"
+elif [ "$AUTO_LOG_MODE" = "none" ]; then
+  LOG_MODE=""
+  LOG_FILE=""
+else
+  if [ "$NON_INTERACTIVE" = "true" ]; then
+    LOG_MODE=""
+    LOG_FILE=""
+  else
+    LOG_CHOICE="$(choose_log_mode_and_file "$PID")"
+    LOG_MODE="${LOG_CHOICE%%|*}"
+    LOG_FILE="${LOG_CHOICE#*|}"
+  fi
+fi
+
+if [ -n "$LOG_MODE" ] && [ -n "$LOG_FILE" ] && [ ! -f "$LOG_FILE" ]; then
+  echo "❌ notify: лог-файл не найден: $LOG_FILE" >&2
+  exit 1
+fi
+
+TEXT="👀 notify: слежу за процессом
+
+PID: $PID
+process: $START_CMD
+server: $(hostname)
+started: $(now)"
+
+if [ -n "$LOG_MODE" ] && [ -n "$LOG_FILE" ]; then
+  TEXT="$TEXT
+
+log mode: $LOG_MODE
+log file: $LOG_FILE"
+fi
+
+TEXT="$TEXT
+
+Сообщу, когда завершится."
+
+echo "$TEXT"
+send_tg "$TEXT"
+
+LIVE_LOG_PID=""
+
+if [ "$LOG_MODE" = "live" ] && [ -n "$LOG_FILE" ] && [ -f "$LOG_FILE" ]; then
+  LIVE_LOG_PID="$(start_live_log_watcher "$PID" "$START_ID" "$LOG_FILE")"
+  echo "live log watcher: $LIVE_LOG_PID"
+fi
+
+(
+  while is_same_process_alive "$PID" "$START_ID"; do
+    sleep 10
+  done
+
+  if [ -n "$LIVE_LOG_PID" ]; then
+    kill_process_tree "$LIVE_LOG_PID" 2>/dev/null || true
+  fi
+
+  END_TS="$(date +%s)"
+  DURATION="$((END_TS - START_TS))"
+  DURATION_HUMAN="$(human_duration "$DURATION")"
+
+  BASE_TEXT="✅ notify: процесс завершился
+
+PID: $PID
+duration: $DURATION_HUMAN
+process: $START_CMD
+server: $(hostname)
+finished: $(now)
+
+Исходная строка:
+$START_INFO"
+
+  DONE_TEXT="$BASE_TEXT"
+
+  if [ "$LOG_MODE" = "tail" ] && [ -n "$LOG_FILE" ] && [ -f "$LOG_FILE" ]; then
+    LOG_HEADER="
+
+Последние строки лога:
+$LOG_FILE
+
+"
+    BUDGET=$((TG_LIMIT - ${#BASE_TEXT} - ${#LOG_HEADER} - 32))
+
+    if [ "$BUDGET" -gt 200 ]; then
+      LOG_TAIL="$(tail_by_budget "$LOG_FILE" "$BUDGET")"
+      DONE_TEXT="${BASE_TEXT}${LOG_HEADER}${LOG_TAIL}"
+    fi
+  fi
+
+  echo "$DONE_TEXT" >> "$STATE_DIR/done.log"
+  send_tg "$DONE_TEXT"
+  rm -f "$LOCK_FILE"
+) >"$WATCHER_OUT" 2>"$WATCHER_ERR" &
+
+WATCHER_PID="$!"
+echo "$WATCHER_PID" > "$LOCK_FILE"
+
+echo
+echo "✅ Watcher запущен в фоне"
+echo "PID watcher: $WATCHER_PID"
+echo "stdout: $WATCHER_OUT"
+echo "stderr: $WATCHER_ERR"
