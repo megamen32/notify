@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Minimal stdio MCP server for /usr/local/bin/notify.
 
-Designed for AI agents: start long jobs, attach Telegram completion notification,
-and return immediately instead of keeping the chat/tool call blocked.
+Designed for AI agents: send lightweight human-facing Telegram pings.
+For long background work and returning to the right chat, use agent-resume;
+use notify at the end of work or before asking the user a question.
 """
 from __future__ import annotations
 
@@ -22,7 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 SERVER_NAME = "notify-mcp"
-SERVER_VERSION = "1.1.0"
+SERVER_VERSION = "1.2.0"
 NOTIFY_BIN = Path(os.environ.get("NOTIFY_BIN", "/usr/local/bin/notify"))
 STATE_DIR = Path(os.environ.get("NOTIFY_MCP_STATE_DIR", "~/.local/state/notify-mcp")).expanduser()
 JOBS_DIR = STATE_DIR / "jobs"
@@ -446,7 +447,7 @@ def tool_kill_job(args: Dict[str, Any]) -> Dict[str, Any]:
 
 TOOLS = {
     "send_message": {
-        "description": "Send a plain Telegram message immediately. Use this for human-facing completion notes like: 'I finished X, please check'. This does not watch a process and does not resume context.",
+        "description": "Send a plain Telegram message immediately. Preferred use: ping the human at the end of work or right before asking a question, e.g. 'I finished X, please check'. This is only an extra notification; agent-resume handles long waits and context resume.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -461,11 +462,9 @@ TOOLS = {
     },
     "run_and_notify": {
         "description": (
-            "Run a non-interactive shell command in a detached background process, attach /usr/local/bin/notify, and return job_id/pid/log_file. "
-            "Built-in AI usage rule: use this instead of a blocking shell command for non-interactive jobs expected to take more than 3 minutes. "
-            "Set log_mode='tail', hard_timeout='30m', replace=true, and wait_seconds no more than 180. "
-            "If the result has alive=true/state='running', stop waiting and report job_id, pid, and log_file to the user; do not keep polling or dumping logs unless explicitly asked. "
-            "Use pty-mcp instead when the command may be interactive, use a TUI, ask prompts, need keystrokes, or require a real terminal."
+            "Legacy process watcher: run a non-interactive shell command and send Telegram on completion. "
+            "Do not use this as the default long-wait/resume mechanism; use agent-resume for long work and returning to the correct chat. "
+            "Use run_and_notify only when the human specifically needs a process-completion Telegram notification."
         ),
         "inputSchema": {
             "type": "object",
@@ -483,7 +482,7 @@ TOOLS = {
                     "type": "string",
                     "enum": ["none", "tail", "live"],
                     "default": "tail",
-                    "description": "How notify should include logs in Telegram. For AI long jobs prefer 'tail' to keep output bounded.",
+                    "description": "How notify should include logs in Telegram. Prefer tail only for explicit process-completion notifications.",
                 },
                 "replace": {
                     "type": "boolean",
@@ -512,9 +511,8 @@ TOOLS = {
     },
     "attach_pid": {
         "description": (
-            "Attach Telegram completion notification to an already running non-interactive PID and return immediately. "
-            "AI usage: use this when a long process was started outside notify-mcp but should notify on completion. "
-            "For interactive/TUI/prompt processes prefer pty-mcp; for new non-interactive long jobs prefer run_and_notify."
+            "Legacy process watcher: attach Telegram completion notification to an already running non-interactive PID. "
+            "Prefer agent-resume for long work/context resume; use this only when the human specifically needs process-completion Telegram."
         ),
         "inputSchema": {
             "type": "object",
@@ -548,8 +546,8 @@ TOOLS = {
     },
     "attach_query": {
         "description": (
-            "Attach Telegram completion notification to a process found by command substring. Non-interactive and returns immediately. "
-            "Fails on multiple matches unless first=true. Prefer attach_pid when PID is known; prefer run_and_notify for new jobs."
+            "Legacy process watcher: attach Telegram completion notification to a process found by command substring. "
+            "Prefer agent-resume for long work/context resume; use this only when the human specifically needs process-completion Telegram."
         ),
         "inputSchema": {
             "type": "object",
@@ -587,7 +585,7 @@ TOOLS = {
         "handler": tool_attach_query,
     },
     "job_status": {
-        "description": "Small bounded status check for a notify-mcp background job. Use sparingly; if Telegram notify is attached, do not repeatedly poll long-running jobs.",
+        "description": "Small bounded status check for a legacy notify-mcp background job. Use sparingly; agent-resume is preferred for long work.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -599,7 +597,7 @@ TOOLS = {
         "handler": tool_job_status,
     },
     "job_tail": {
-        "description": "Return a bounded tail of a notify-mcp job log. Token-saving rule: only request small tails for explicit debugging; do not use this as a polling loop.",
+        "description": "Return a bounded tail of a legacy notify-mcp job log. Only request small tails for explicit debugging; do not use this as a polling loop.",
         "inputSchema": {
             "type": "object",
             "properties": {

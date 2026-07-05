@@ -3,22 +3,22 @@
 **Languages:** English | [Русский](README.ru.md) | [中文](README.zh.md)
 
 <p align="center">
-  <img src="assets/hero.svg" alt="Notify MCP saves agent tokens during long waits" width="100%">
+  <img src="assets/hero.svg" alt="Notify MCP sends Telegram pings from AI agents" width="100%">
 </p>
 
-**Stop paying your AI agent to stare at a terminal.**
+**Ping the human when the agent needs attention.**
 
-Notify MCP lets Codex and other coding agents start long, non-interactive jobs, wait for a short bounded window, then return control with a `job_id`, `pid`, and `log_file`. The process keeps running in the background, `/usr/local/bin/notify` watches it, and Telegram tells you when it finishes or hits a hard timeout.
+Notify MCP is now primarily a lightweight Telegram ping tool for AI agents: use it at the end of work or before asking the user a question. Long work and returning to the correct chat should be handled by `agent-resume`. Legacy process watchers are still available when you specifically need Telegram on process completion.
 
-For hour-long builds, migrations, test suites, backups, and deployments, this can cut waiting/polling token usage by **90%+** compared with an agent that keeps checking logs until the command exits.
+For long builds, migrations, test suites, backups, and deployments, prefer `agent-resume` for waiting/resume. Use `notify.send_message` as the human-facing final ping: “I finished, please check.”
 
 ## Why agents use it
 
-- **Codex long-wait mode:** launch the job, wait up to 180 seconds, then stop burning tokens.
-- **No polling loop:** the MCP tool schema tells the model to return when `alive=true`.
-- **Telegram completion:** success, failure, logs, and hard-timeout alerts arrive outside the chat.
+- **Human ping mode:** send a simple Telegram note at the end or before asking for user input.
+- **No context responsibility:** `agent-resume` handles long waits and resume; Notify only nudges the human.
+- **Telegram completion fallback:** legacy watchers can still send success/failure/log alerts when explicitly needed.
 - **Self-describing MCP:** usage rules are embedded in `tools/list`; no skill is required for MCP-aware clients.
-- **PTY-safe split:** use Notify MCP for non-interactive jobs; use `pty-mcp` for prompts, TUIs, editors, or keystrokes.
+- **Simple final ping:** “I finished X, please check” stays one MCP call.
 
 ## 30-second MCP install
 
@@ -102,13 +102,13 @@ Then run **MCP: List Servers** and start `notify`.
 The MCP server itself teaches the model the rule:
 
 ```text
-For non-interactive jobs expected to take more than 3 minutes,
-use run_and_notify with log_mode="tail", wait_seconds <= 180,
-hard_timeout="30m", replace=true.
+Use send_message as an extra Telegram ping at the end of work or before
+asking the user a question. For long work, waiting, and returning to the
+correct chat, use agent-resume.
 
-If alive=true/state="running", stop waiting and report job_id,
-pid, and log_file. Do not keep polling unless explicitly asked.
-Use pty-mcp for interactive/TUI/prompt commands.
+run_and_notify / attach_pid / attach_query are legacy process-completion
+watchers. Use them only when the human specifically needs Telegram when a
+process exits.
 ```
 
 ## Downloadable release assets
@@ -134,9 +134,22 @@ Usually **no**. For Codex, OpenCode, VS Code, Claude, and other MCP-aware client
 
 MIT
 
+
+### AI usage rule
+
+`notify` is now a human ping, not the main long-job control plane.
+
+Use `agent-resume` for long work, waiting, and returning to the correct agent chat. Use `notify.send_message` only as an extra Telegram nudge:
+
+- at the end: “I finished rebuilding X, please check”;
+- before asking the user a question: “I need your input on Y, please look”;
+- when a human-visible milestone matters.
+
+Do not use `notify` as the default mechanism for long waiting/resume. That job belongs to `agent-resume`.
+
 ### MCP: send a plain message
 
-`notify-mcp` includes `send_message` for simple human-facing status notes. Use it when an AI agent only needs to say something like “I finished X, please check”, without watching a process:
+`notify-mcp` includes `send_message` for simple human-facing status notes. Use it as a final/prequestion Telegram ping, without watching a process:
 
 ```json
 {
@@ -145,5 +158,5 @@ MIT
 }
 ```
 
-This is separate from `run_and_notify`/`attach_pid`, which watch long-running processes.
+This is separate from `agent-resume`, which is the preferred mechanism for long work and resuming the correct chat. `run_and_notify`/`attach_pid` remain legacy process-completion helpers.
 
