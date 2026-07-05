@@ -133,3 +133,17 @@ Usually **no**. For Codex, OpenCode, VS Code, Claude, and other MCP-aware client
 ## License
 
 MIT
+
+### MCP: send a plain message
+
+`notify-mcp` includes `send_message` for simple human-facing status notes. Use it when an AI agent only needs to say something like “I finished X, please check”, without watching a process:
+
+```json
+{
+  "message": "I finished rebuilding the index, please check the result.",
+  "title": "GPTAdmin"
+}
+```
+
+This is separate from `run_and_notify`/`attach_pid`, which watch long-running processes.
+

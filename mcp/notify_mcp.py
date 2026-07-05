@@ -11,6 +11,9 @@ import os
 import shlex
 import signal
 import subprocess
+import urllib.error
+import urllib.parse
+import urllib.request
 import sys
 import time
 import uuid
@@ -19,7 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 SERVER_NAME = "notify-mcp"
-SERVER_VERSION = "1.0.0"
+SERVER_VERSION = "1.1.0"
 NOTIFY_BIN = Path(os.environ.get("NOTIFY_BIN", "/usr/local/bin/notify"))
 STATE_DIR = Path(os.environ.get("NOTIFY_MCP_STATE_DIR", "~/.local/state/notify-mcp")).expanduser()
 JOBS_DIR = STATE_DIR / "jobs"
@@ -107,6 +110,102 @@ def run_quick(args: List[str], cwd: Optional[str] = None, timeout: int = 15) -> 
         "stderr": p.stderr[-12000:],
         "argv": args,
     }
+
+
+def parse_env_file(path: Path) -> Dict[str, str]:
+    env: Dict[str, str] = {}
+    if not path.exists():
+        return env
+    for raw in path.read_text(errors="replace").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'").strip('"')
+        if key:
+            env[key] = value
+    return env
+
+
+def telegram_config() -> Dict[str, str]:
+    secrets_file = Path(os.environ.get("NOTIFY_SECRETS_FILE", "~/.config/secrets/notifier.env")).expanduser()
+    file_env = parse_env_file(secrets_file)
+    token = os.environ.get("TELEGRAM_BOT_TOKEN") or file_env.get("TELEGRAM_BOT_TOKEN") or ""
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID") or file_env.get("TELEGRAM_CHAT_ID") or ""
+    proxy = os.environ.get("TELEGRAM_PROXY_URL") or os.environ.get("TELEGRAM_PROXY") or file_env.get("TELEGRAM_PROXY_URL") or file_env.get("TELEGRAM_PROXY") or ""
+    timeout_ms = os.environ.get("TELEGRAM_TIMEOUT_MS") or file_env.get("TELEGRAM_TIMEOUT_MS") or "3500"
+    if not token or not chat_id:
+        raise ValueError(f"TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID not configured in env or {secrets_file}")
+    return {"token": token, "chat_id": chat_id, "proxy": proxy, "timeout_ms": timeout_ms, "secrets_file": str(secrets_file)}
+
+
+def normalize_timeout_seconds_from_ms(value: str) -> int:
+    digits = "".join(ch for ch in str(value or "3500") if ch.isdigit()) or "3500"
+    return max(1, (int(digits) + 999) // 1000)
+
+
+def telegram_send_text(message: str, *, disable_web_page_preview: bool = True) -> Dict[str, Any]:
+    cfg = telegram_config()
+    timeout = normalize_timeout_seconds_from_ms(cfg["timeout_ms"])
+    url = f"https://api.telegram.org/bot{cfg['token']}/sendMessage"
+    data = urllib.parse.urlencode({
+        "chat_id": cfg["chat_id"],
+        "text": message,
+        "disable_web_page_preview": "true" if disable_web_page_preview else "false",
+    }).encode("utf-8")
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({"https": cfg["proxy"], "http": cfg["proxy"]}) if cfg["proxy"] else urllib.request.ProxyHandler({}))
+    req = urllib.request.Request(url, data=data, method="POST")
+    with opener.open(req, timeout=timeout) as resp:
+        body = resp.read().decode("utf-8", errors="replace")
+        status = getattr(resp, "status", None) or resp.getcode()
+    try:
+        parsed = json.loads(body)
+    except Exception:
+        parsed = {"ok": False, "raw": body[-1000:]}
+    result = {
+        "http_status": status,
+        "ok": bool(parsed.get("ok")) and 200 <= int(status) < 300,
+        "telegram_ok": parsed.get("ok"),
+        "description": parsed.get("description"),
+    }
+    if isinstance(parsed.get("result"), dict):
+        msg = parsed["result"]
+        result["message_id"] = msg.get("message_id")
+        result["date"] = msg.get("date")
+    return result
+
+
+def split_telegram_message(text: str, limit: int = 3900) -> List[str]:
+    if len(text) <= limit:
+        return [text]
+    parts: List[str] = []
+    rest = text
+    while rest:
+        chunk = rest[:limit]
+        cut = max(chunk.rfind("\n"), chunk.rfind(" "))
+        if cut < limit // 2:
+            cut = limit
+        parts.append(rest[:cut].rstrip())
+        rest = rest[cut:].lstrip()
+    return parts
+
+
+def tool_send_message(args: Dict[str, Any]) -> Dict[str, Any]:
+    message = str(args.get("message") or "").strip()
+    if not message:
+        raise ValueError("message is required")
+    title = str(args.get("title") or "").strip()
+    disable_preview = bool(args.get("disable_web_page_preview", True))
+    text = f"{title}\n\n{message}" if title else message
+    parts = split_telegram_message(text)
+    sent = []
+    for idx, part in enumerate(parts, start=1):
+        if len(parts) > 1:
+            part = f"[{idx}/{len(parts)}]\n" + part
+        sent.append(telegram_send_text(part, disable_web_page_preview=disable_preview))
+    ok = all(item.get("ok") for item in sent)
+    return {"ok": ok, "sent_parts": len(sent), "results": sent}
 
 
 def notify_args_for(pid: Optional[int] = None, query: Optional[str] = None, log_mode: str = "none", log_file: Optional[str] = None, replace: bool = True, first: bool = False, hard_timeout: Any = None) -> List[str]:
@@ -346,6 +445,20 @@ def tool_kill_job(args: Dict[str, Any]) -> Dict[str, Any]:
 
 
 TOOLS = {
+    "send_message": {
+        "description": "Send a plain Telegram message immediately. Use this for human-facing completion notes like: 'I finished X, please check'. This does not watch a process and does not resume context.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "message": {"type": "string", "description": "Message text to send to Telegram."},
+                "title": {"type": ["string", "null"], "description": "Optional title/prefix, e.g. 'GPTAdmin finished'."},
+                "disable_web_page_preview": {"type": "boolean", "default": True},
+            },
+            "required": ["message"],
+            "additionalProperties": False,
+        },
+        "handler": tool_send_message,
+    },
     "run_and_notify": {
         "description": (
             "Run a non-interactive shell command in a detached background process, attach /usr/local/bin/notify, and return job_id/pid/log_file. "
