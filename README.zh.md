@@ -3,22 +3,22 @@
 [English](README.md) | [Русский](README.ru.md) | **中文**
 
 <p align="center">
-  <img src="assets/hero.svg" alt="Notify MCP 在长时间等待期间节省智能体 token" width="100%">
+  <img src="assets/hero.svg" alt="Notify MCP 从 AI agent 发送 Telegram 提醒" width="100%">
 </p>
 
-**不要再让 AI 智能体花钱盯着终端发呆。**
+**当 agent 需要人类注意时发送提醒。**
 
-Notify MCP 让 Codex 和其他代码智能体启动长时间、非交互式任务，只等待一个很短的受限窗口，然后带着 `job_id`、`pid` 和 `log_file` 返回控制权。进程继续在后台运行，`/usr/local/bin/notify` 负责监控，Telegram 会在任务完成或达到 hard timeout 时通知你。
+Notify MCP 现在主要是给 AI agent 使用的轻量 Telegram 人类提示：在工作结束时或向用户提问之前发送提醒。长任务、等待以及回到正确聊天上下文应由 `agent-resume` 处理。旧的进程 watcher 仍然保留，只用于确实需要“进程结束时发 Telegram”的场景。
 
-对于持续一小时的构建、迁移、测试套件、备份和部署，相比让智能体一直轮询日志直到命令结束，这可以减少 **90%+** 的等待/轮询 token 消耗。
+对于长构建、迁移、测试、备份和部署，请使用 `agent-resume` 进行等待/resume。`notify.send_message` 只作为面向人的最终提示：“我完成了，请检查”。
 
 ## 为什么智能体需要它
 
-- **Codex long-wait mode：** 启动任务，最多等待 180 秒，然后停止消耗 token。
-- **没有 polling loop：** MCP 工具 schema 会告诉模型在 `alive=true` 时返回。
-- **Telegram completion：** 成功、失败、日志和 hard-timeout 都在聊天之外通知。
+- **Human ping mode：** 在工作结束或向用户请求输入前发送简单 Telegram 提醒。
+- **不负责上下文恢复：** `agent-resume` 负责长等待和 resume；Notify 只提醒人。
+- **进程完成 fallback：** legacy watchers 仍可在明确需要时发送成功/失败/日志提醒。
 - **Self-describing MCP：** 使用规则内置在 `tools/list` 里；支持 MCP 的客户端不需要 skill。
-- **PTY-safe 分工：** Notify MCP 用于非交互任务；`pty-mcp` 用于 prompts、TUI、编辑器或 keystrokes。
+- **简单最终提醒：** “我完成了 X，请检查” 只需要一次 MCP 调用。
 
 ## 30 秒 MCP 安装
 
@@ -102,13 +102,13 @@ args = ["-y", "github:megamen32/notify"]
 MCP server 会自己把规则告诉模型：
 
 ```text
-对于预计超过 3 分钟的非交互任务，
-使用 run_and_notify，并设置 log_mode="tail"、wait_seconds <= 180、
-hard_timeout="30m"、replace=true。
+Use send_message as an extra Telegram ping at the end of work or before
+asking the user a question. For long work, waiting, and returning to the
+correct chat, use agent-resume.
 
-如果 alive=true/state="running"，停止等待并报告 job_id、
-pid 和 log_file。除非用户明确要求，不要继续 polling。
-交互式/TUI/prompt 命令请使用 pty-mcp。
+run_and_notify / attach_pid / attach_query are legacy process-completion
+watchers. Use them only when the human specifically needs Telegram when a
+process exits.
 ```
 
 ## 可下载的 release assets
@@ -133,3 +133,16 @@ pid 和 log_file。除非用户明确要求，不要继续 polling。
 ## License
 
 MIT
+
+
+### AI 使用规则
+
+`notify` 现在是 human ping，不是主要的 long-job control plane。
+
+长任务、等待以及回到正确聊天请使用 `agent-resume`。`notify.send_message` 只作为额外 Telegram 提醒：
+
+- 结束时：“我完成了 X，请检查”；
+- 提问前：“我需要你确认 Y，请看一下”；
+- 当某个 milestone 需要人看到时。
+
+不要把 `notify` 当作默认的长等待/resume 机制；这是 `agent-resume` 的职责。
