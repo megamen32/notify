@@ -4,13 +4,13 @@
   "description": "Small CLI and MCP process watcher that notifies humans when work needs attention",
   "type": "module",
   "license": "MIT",
-  "homepage": "https://github.com/megamen32/notify-cli#readme",
+  "homepage": "https://github.com/megamen32/notify#readme",
   "repository": {
     "type": "git",
-    "url": "git+ssh://git@github.com/megamen32/notify-cli.git"
+    "url": "git+ssh://git@github.com/megamen32/notify.git"
   },
   "bugs": {
-    "url": "https://github.com/megamen32/notify-cli/issues"
+    "url": "https://github.com/megamen32/notify/issues"
   },
   "keywords": [
     "mcp",
@@ -27,7 +27,6 @@
     "notify-install": "npm/install-notify.js"
   },
   "exports": {
-    "./notification-center": "./npm/notification-center-client.js",
     "./package.json": "./package.json"
   },
   "files": [

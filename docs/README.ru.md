@@ -1,10 +1,10 @@
-# Notificly
+# Notify
 
 [English](../README.md) · **Русский** · [中文](README.zh-CN.md)
 
-Notificly — маленький CLI-наблюдатель за локальным процессом. Он ждёт
+Notify — маленький CLI-наблюдатель за локальным процессом. Он ждёт
 завершения команды, не требует держать агента в polling-цикле и отправляет
-итоговое уведомление через Notify Center.
+итоговое уведомление через [NoticePlace](https://github.com/megamen32/noticeplace).
 
 ## Установка
 

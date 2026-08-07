@@ -1,9 +1,9 @@
-# Notificly
+# Notify
 
 [English](../README.md) · [Русский](README.ru.md) · **中文**
 
-Notificly 是一个轻量的本地进程 watcher。它等待命令结束，不需要 agent
-持续轮询，并通过 Notify Center 发送最终通知。
+Notify 是一个轻量的本地进程 watcher。它等待命令结束，不需要 agent
+持续轮询，并通过 [NoticePlace](https://github.com/megamen32/noticeplace) 发送最终通知。
 
 ## 安装
 

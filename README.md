@@ -2,7 +2,7 @@
 
 [Русский](docs/README.ru.md) · [中文](docs/README.zh-CN.md) · [Docs](docs/)
 
-![Notificly waits for local processes and sends a completion alert](assets/hero.svg)
+![Notify waits for local processes and sends a completion alert](assets/hero.svg)
 
 > A tiny process watcher that waits for local commands and sends a durable completion notification.
 
@@ -38,7 +38,7 @@ npx -y github:megamen32/notify
 - [AI skill](skill/SKILL.md)
 - [Русская документация](docs/cli.ru.md)
 - [中文文档](docs/cli.zh.md)
-- [Notify Center](https://github.com/megamen32/notify)
+- [NoticePlace — delivery center](https://github.com/megamen32/noticeplace)
 
 ## License
 
