@@ -2,7 +2,7 @@
 
 [Русский](docs/README.ru.md) · [中文](docs/README.zh-CN.md) · [Docs](docs/)
 
-![Notify waits for local processes and sends a completion alert](assets/hero.svg)
+![Notify carries an AI completion signal to a human](assets/hero-notify.png)
 
 > A tiny process watcher that waits for local commands and sends a durable completion notification.
 

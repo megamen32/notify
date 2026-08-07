@@ -37,6 +37,7 @@
     "npm/notify-mcp.js",
     "npm/install-notify.js",
     "docs/",
+    "assets/hero-notify.png",
     "assets/hero.svg",
     "skill/SKILL.md"
   ],
