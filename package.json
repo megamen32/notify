@@ -1,0 +1,47 @@
+{
+  "name": "notify",
+  "version": "0.1.2",
+  "description": "Small CLI and MCP process watcher that notifies humans when work needs attention",
+  "type": "module",
+  "license": "MIT",
+  "homepage": "https://github.com/megamen32/notify-cli#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/megamen32/notify-cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/megamen32/notify-cli/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "codex",
+    "opencode",
+    "vscode",
+    "telegram",
+    "agent",
+    "long-running"
+  ],
+  "bin": {
+    "notify-mcp": "npm/notify-mcp.js",
+    "notify-install": "npm/install-notify.js"
+  },
+  "exports": {
+    "./notification-center": "./npm/notification-center-client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "README*.md",
+    "LICENSE",
+    "bin/notify",
+    "mcp/notify_mcp.py",
+    "npm/notify-mcp.js",
+    "npm/install-notify.js",
+    "docs/",
+    "assets/hero.svg",
+    "skill/SKILL.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}
